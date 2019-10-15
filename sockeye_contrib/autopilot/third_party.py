@@ -23,6 +23,8 @@ import sys
 import threading
 from typing import Iterable, Optional
 
+import sentencepiece as spm
+
 from sockeye import utils
 
 
@@ -43,6 +45,13 @@ SUBWORD_NMT_REPO = "https://github.com/rsennrich/subword-nmt.git"
 SUBWORD_NMT_DEST = "subword-nmt"
 SUBWORD_NMT_COMMIT = "9a95f9f7400a3a891a9d8168186229a54347fc0b"
 SUBWORD_SPECIAL = "@@"
+
+# sentencepiece wrapper files from fairseq
+FAIRSEQ_REPO = "https://github.com/pytorch/fairseq.git"
+# Paths to include in sparse checkout
+FAIRSEQ_SPARSE_CHECKOUT = ["scripts"]
+FAIRSEQ_DEST = "fairseq"
+FAIRSEQ_COMMIT = "63b6b3f411fd037d97f452df0417171ba5aa4f5d"
 
 # Unicode underscore
 PLACEHOLDER = "▁".encode("utf-8")
@@ -133,6 +142,37 @@ def checkout_subword_nmt(workspace_dir: str):
         logging.info("Log: %s", log_fname)
         subprocess.call(["git", "clone", SUBWORD_NMT_REPO, dest], stdout=log, stderr=log)
         subprocess.call(["git", "checkout", SUBWORD_NMT_COMMIT], cwd=dest, stdout=log, stderr=log)
+
+
+def checkout_fairseq_spm(workspace_dir: str):
+    """
+    Checkout SentencePiece wrappers (sparse checkout of Fairseq).
+
+    :param workspace_dir: Workspace directory.
+    """
+    # Prerequisites
+    check_git()
+    # Check cache
+    dest = os.path.join(workspace_dir, DIR_THIRD_PARTY, FAIRSEQ_DEST)
+    if confirm_checkout(dest, FAIRSEQ_COMMIT):
+        logging.info("Usable: %s", dest)
+        return
+    # Need to (re-)checkout
+    if os.path.exists(dest):
+        shutil.rmtree(dest)
+    logging.info("Checkout: %s -> %s", FAIRSEQ_REPO, dest)
+    os.makedirs(dest)
+    log_fname = os.path.join(workspace_dir, DIR_LOGS, "checkout.{}.{}.log".format(FAIRSEQ_DEST, os.getpid()))
+    with open(log_fname, "wb") as log:
+        logging.info("Log: %s", log_fname)
+        subprocess.call(["git", "init"], cwd=dest, stdout=log, stderr=log)
+        subprocess.call(["git", "remote", "add", "origin", FAIRSEQ_REPO], cwd=dest, stdout=log, stderr=log)
+        subprocess.call(["git", "config", "core.sparsecheckout", "true"], cwd=dest, stdout=log, stderr=log)
+        with open(os.path.join(dest, ".git", "info", "sparse-checkout"), "w") as out:
+            for path in FAIRSEQ_SPARSE_CHECKOUT:
+                print(path, file=out)
+        subprocess.call(["git", "pull", "origin", "master"], cwd=dest, stdout=log, stderr=log)
+        subprocess.call(["git", "checkout", FAIRSEQ_COMMIT], cwd=dest, stdout=log, stderr=log)
 
 
 def confirm_checkout(dest: str, commit: str) -> bool:
@@ -313,3 +353,69 @@ def copy_out(source: Iterable[bytes], dest: io.BytesIO, use_placeholders: bool =
             if line.startswith(PLACEHOLDER):
                 line = b"\n"
         dest.write(line)
+
+
+def decompress(fname, use_placeholders=False):
+    if fname.endswith(".gz"):
+        extracted = fname.replace(".gz","")
+        if not os.path.exists(extracted):
+            with bin_open(fname) as inp:
+                with open(extracted, "wb") as out:
+                    for line in inp:
+                        if use_placeholders and not line.strip():
+                            line = PLACEHOLDER + b"\n"
+                        out.write(line)
+        return extracted
+    return fname
+
+
+def call_spm_train(workspace_dir: str, source_fname: str, target_fname: str, model_fname: str, num_ops: int = 32000):
+    source_fname = decompress(source_fname)
+    target_fname = decompress(target_fname)
+    command = (" --input=" + source_fname + "," + target_fname + \
+               " --model_prefix=" + model_fname + \
+               " --vocab_size=" + str(num_ops) + \
+               " --max_sentence_length=2048" \
+               " --input_sentence_size=10000000").strip().split()
+    spm_train_fname = os.path.join(workspace_dir,
+                                   DIR_THIRD_PARTY,
+                                   FAIRSEQ_DEST,
+                                   "scripts",
+                                   "spm_train.py")
+    log_fname = os.path.join(workspace_dir, DIR_LOGS, "spm_train.{}.log".format(os.getpid()))
+    with open(log_fname, "wb") as log:
+        subprocess.call([sys.executable, spm_train_fname] + command, stdout=log, stderr=log)
+    os.remove(source_fname)
+    os.remove(target_fname)
+
+
+def call_spm_encode(workspace_dir: str, input_fname: str, output_fname: str, model_fname: str):
+    input_fname = decompress(input_fname, True)
+    if not model_fname.endswith(".model"):
+        model_fname += ".model"
+    if output_fname.endswith(".gz"):
+        output_fname = output_fname.replace(".gz","")
+    command = (" --model " + model_fname + \
+               " --output_format=piece" \
+               " --inputs " + input_fname + \
+               " --outputs " + output_fname).strip().split()
+    spm_encode_fname = os.path.join(workspace_dir,
+                                    DIR_THIRD_PARTY,
+                                    FAIRSEQ_DEST,
+                                    "scripts",
+                                    "spm_encode.py")
+    log_fname = os.path.join(workspace_dir, DIR_LOGS, "spm_encode.{}.log".format(os.getpid()))
+    with open(log_fname, "wb") as log:
+        subprocess.call([sys.executable, spm_encode_fname] + command, stdout=log, stderr=log)
+    os.remove(input_fname)
+    with open(output_fname, "rb") as inp:
+        with gzip.open(output_fname+".gz", "wb") as out:
+            shutil.copyfileobj(inp, out)
+        os.remove(output_fname)
+
+
+def merge_spm(input_fname: str, output_fname: str):
+    with utils.smart_open(input_fname, "r") as inp, open(output_fname, "w", encoding="utf-8") as out:
+        for line in inp:
+            sentence = line.replace(' ', '').replace('\u2581', ' ').lstrip()
+            out.write(sentence)

@@ -35,6 +35,7 @@ class Config(yaml.YAMLObject, metaclass=TaggedYamlObjectMetaclass):
     Actual Configuration should subclass this object.
     """
     yaml_loader = yaml.UnsafeLoader  # type: ignore
+    #yaml_loader = yaml.Loader  # type: ignore
 
     def __init__(self):
         self.__add_frozen()
@@ -122,6 +123,8 @@ class Config(yaml.YAMLObject, metaclass=TaggedYamlObjectMetaclass):
         """
         with open(fname) as inp:
             obj = yaml.load(inp, Loader=yaml.UnsafeLoader)  # type: ignore
+            #obj = yaml.load(inp, Loader=yaml.Loader)  # type: ignore
+            #obj = yaml.load(inp)
             obj.__add_frozen()
             return obj
 

@@ -13,6 +13,10 @@
 
 FROM amazonlinux:2017.09.0.20170930
 
+
+ENV http_proxy http://192.168.1.3:3128
+ENV https_proxy http://192.168.1.3:3128
+
 RUN yum install -y \
     cmake \
     git \

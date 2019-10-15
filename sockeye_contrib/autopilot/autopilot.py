@@ -563,6 +563,8 @@ def run_steps(args: argparse.Namespace):
     # Requires byte-pair encoding?
     if args.task or args.custom_text_type in (CUSTOM_UTF8_RAW, CUSTOM_UTF8_TOK):
         third_party.checkout_subword_nmt(args.workspace)
+    if args.spm:
+        third_party.checkout_fairseq_spm(args.workspace)
 
     # (4) Populate train/dev/test data
 
@@ -615,14 +617,15 @@ def run_steps(args: argparse.Namespace):
 
     # Task requires tokenization if _any_ raw file is not already tokenized
     requires_tokenization = False
-    if args.task:
-        for file_sets in (task.train, task.dev, task.test):
-            for _, _, text_type in file_sets:
-                if text_type in TEXT_REQUIRES_TOKENIZATION:
-                    requires_tokenization = True
-    else:
-        if args.custom_text_type == CUSTOM_UTF8_RAW:
-            requires_tokenization = True
+    if not args.no_tok:
+        if args.task:
+            for file_sets in (task.train, task.dev, task.test):
+                for _, _, text_type in file_sets:
+                    if text_type in TEXT_REQUIRES_TOKENIZATION:
+                        requires_tokenization = True
+        else:
+            if args.custom_text_type == CUSTOM_UTF8_RAW:
+                requires_tokenization = True
     logging.info("=== Tokenize train/dev/test data ===")
     step_dir_tok = os.path.join(dir_task, DIR_DATA, DIR_TOK)
     complete_fname = os.path.join(step_dir_tok, FILE_COMPLETE)
@@ -673,11 +676,18 @@ def run_steps(args: argparse.Namespace):
             if args.test:
                 num_ops = TEST_BPE_OPS
             logging.info("BPE Learn (%s): %s + %s -> %s", num_ops, source_fname, target_fname, codes_fname)
-            third_party.call_learn_bpe(workspace_dir=args.workspace,
-                                       source_fname=source_fname,
-                                       target_fname=target_fname,
-                                       model_fname=codes_fname,
-                                       num_ops=num_ops)
+            if args.spm:
+                third_party.call_spm_train(workspace_dir=args.workspace,
+                                        source_fname=source_fname,
+                                        target_fname=target_fname,
+                                        model_fname=codes_fname,
+                                        num_ops=num_ops)
+            else:
+                third_party.call_learn_bpe(workspace_dir=args.workspace,
+                                        source_fname=source_fname,
+                                        target_fname=target_fname,
+                                        model_fname=codes_fname,
+                                        num_ops=num_ops)
         # Record success
         touch_file(complete_fname)
         logging.info("Step complete: %s", step_dir_bpe_model)
@@ -703,10 +713,16 @@ def run_steps(args: argparse.Namespace):
             else:
                 codes_fname = os.path.join(step_dir_bpe_model, FILE_BPE_CODES)
                 logging.info("BPE: %s -> %s", input_fname, output_fname)
-                third_party.call_apply_bpe(workspace_dir=args.workspace,
-                                           input_fname=input_fname,
-                                           output_fname=output_fname,
-                                           model_fname=codes_fname)
+                if args.spm:
+                    third_party.call_spm_encode(workspace_dir=args.workspace,
+                                            input_fname=input_fname,
+                                            output_fname=output_fname,
+                                            model_fname=codes_fname)    
+                else:
+                    third_party.call_apply_bpe(workspace_dir=args.workspace,
+                                            input_fname=input_fname,
+                                            output_fname=output_fname,
+                                            model_fname=codes_fname)
         # Record success
         touch_file(complete_fname)
         logging.info("Step complete: %s", step_dir_bpe)
@@ -803,6 +819,35 @@ def run_steps(args: argparse.Namespace):
                            output_fname=fname_bleu_bpe,
                            log_fname=fname_log,
                            tokenized=True)
+        
+        # Direct SentencePiece application
+        if args.no_tok:
+            fname_detok = fname_bpe[:-len(SUFFIX_BPE)] + SUFFIX_DETOK
+            fname_ref_raw = os.path.join(step_dir_raw, fname_base + SUFFIX_TRG_GZ)
+            fname_bleu_detok = fname_detok + "." + SUFFIX_SACREBLEU
+
+            if os.path.exists(fname_bleu_detok):
+                logging.info("Re-use output: %s", fname_bleu_detok)
+            else:
+                # Merge BPE
+                logging.info("Merge BPE: %s -> %s", fname_bpe, fname_detok)
+                if args.spm:
+                    third_party.merge_spm(input_fname=fname_bpe, output_fname=fname_detok)
+                else:
+                    third_party.merge_bpe(input_fname=fname_bpe, output_fname=fname_detok)
+                fname_log = os.path.join(args.workspace,
+                                        DIR_LOGS,
+                                        "sacrebleu.sacrebleu.{}.{}.{}.{}.log".format(task_name,
+                                                                                    args.model,
+                                                                                    fname_base + SUFFIX_DETOK,
+                                                                                    os.getpid()))
+                call_sacrebleu(input_fname=fname_detok,
+                            ref_fname=fname_ref_raw,
+                            output_fname=fname_bleu_detok,
+                            log_fname=fname_log,
+                            tokenized=False)
+            continue
+
         # Score tokenized
         fname_tok = fname_bpe[:-len(SUFFIX_BPE)] + SUFFIX_TOK
         fname_ref_tok = os.path.join(step_dir_tok, fname_base + SUFFIX_TRG_GZ)
@@ -812,7 +857,10 @@ def run_steps(args: argparse.Namespace):
         else:
             # Merge BPE
             logging.info("Merge BPE: %s -> %s", fname_bpe, fname_tok)
-            third_party.merge_bpe(input_fname=fname_bpe, output_fname=fname_tok)
+            if args.spm:
+                third_party.merge_spm(input_fname=fname_bpe, output_fname=fname_tok)
+            else:
+                third_party.merge_bpe(input_fname=fname_bpe, output_fname=fname_tok)
             fname_log = os.path.join(args.workspace,
                                      DIR_LOGS,
                                      "sacrebleu.sacrebleu.{}.{}.{}.{}.log".format(task_name,
@@ -884,6 +932,10 @@ def main():
                             help="Number of GPUs to use. 0 for CPU only. Default: %(default)s.")
     arg_parser.add_argument("--test", action="store_true", default=False,
                             help="Run in test mode (much abbreviated system build).")
+    arg_parser.add_argument("--spm", action="store_true", default=False,
+                            help="Use SentencePiece")
+    arg_parser.add_argument("--no-tok", action="store_true", default=False,
+                            help="No tokenization")
 
     args = arg_parser.parse_args()
 

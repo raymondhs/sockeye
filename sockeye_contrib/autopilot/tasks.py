@@ -201,6 +201,27 @@ sets are evaluated individually.
 
 # Known sequence-to-sequence tasks that specify train, dev, and test sets.
 TASKS = {
+    "wmt18_dinu_en_de": Task(description="WMT18 Setup from Dinu et al. (2019)",
+                             url="http://statmt.org/wmt18/translation-task.html",
+                             src_lang="en", trg_lang="de", bpe_op=32000,
+                             train=[
+                                 ("europarl_v7/training/europarl-v7.de-en.en",
+                                 "europarl_v7/training/europarl-v7.de-en.de",
+                                 TEXT_UTF8_RAW),
+                                 ("news_commentary_v13/training-parallel-nc-v13/news-commentary-v13.de-en.en",
+                                 "news_commentary_v13/training-parallel-nc-v13/news-commentary-v13.de-en.de",
+                                 TEXT_UTF8_RAW),
+                             ],
+                             dev=[
+                                 ("wmt14_dev/dev/newstest2013-src.de.sgm",
+                                 "wmt14_dev/dev/newstest2013-ref.en.sgm",
+                                 TEXT_UTF8_RAW_SGML),
+                             ],
+                             test=[
+                                 ("wmt17_test/test/newstest2017-ende-src.en.sgm",
+                                 "wmt17_test/test/newstest2017-ende-ref.de.sgm",
+                                 TEXT_UTF8_RAW_SGML),
+                             ]),
     # WMT14 common benchmarks
     "wmt14_de_en": Task(description="WMT14 German-English news",
                         url="http://www.statmt.org/wmt14/translation-task.html",
